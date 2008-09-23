@@ -1,0 +1,16 @@
+Name:           automata
+Version:        1.0
+License:        BSD3
+Author:         Justin Bailey
+Homepage:       
+Maintainer:     jgbailey AT gmail DOT com
+Category:       
+Build-Depends:  base, QuickCheck, time, array, random, parallel
+Synopsis:       Evolves 1D cellular automata that solve the classification problem, among others.
+Exposed-modules: CA
+Hs-Source-Dirs: .
+
+Executable:     GA-CA
+Main-Is:        GA-CA.hs
+Hs-Source-Dirs: .
+ghc-options: -O2 -fexcess-precision -funbox-strict-fields
