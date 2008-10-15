@@ -13,6 +13,7 @@ module Main
 where
 
 import CA
+import Util
 import Control.Monad (replicateM, unless)
 import System.Random (randomRIO)
 import Data.List (sortBy)

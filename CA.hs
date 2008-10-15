@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, TemplateHaskell #-}
+{-# LANGUAGE BangPatterns #-}
 {-# OPTIONS_GHC -fglasgow-exts #-}
 -- |
 -- Module      : CA
@@ -10,38 +10,27 @@
 
 -- Original author: Justin Bailey (jgbailey at gmail.com)
 
-module CA (Rule, fromRule, ruleLength, CA, mkRule, sim, mkRandomRule, mkBiasedCA,
-  mkAllWhiteRule, mkAllBlackRule, mkRandomCA, ruleBits, caBits, caWidth,
-  mkWhiteCA, readRule)
+module CA (Rule, fromRule, ruleLength, CA, mkRule, sim, caWidth, caBits, ruleBits)
 
 where
 
 import Ring
-import System.Random (randomRIO)
-import Control.Monad (replicateM)
-import Control.Monad.ST.Strict (unsafeIOToST)
 import Data.List (intersperse)
-import Data.Array.Base (unsafeAt, unsafeWrite, unsafeRead, unsafeThawSTUArray, UArray(..))
+import Data.Array.Base (unsafeAt, unsafeWrite, UArray(..))
 import Data.Array.Unboxed (UArray)
 import qualified Data.Array.Unboxed as UArray (listArray)
 import Data.Array.IArray (elems, assocs, bounds)
-import Data.Array.MArray (MArray)
 import GHC.ST (ST)
-import qualified Data.Array.ST as ST (runSTUArray, newListArray, writeArray, newArray_, STUArray, newArray, getAssocs)
-import Data.Bits ((.&.), shiftL, (.|.), bitSize, testBit, clearBit, setBit, Bits(), shiftR, rotateL, shiftL, complement)
+import qualified Data.Array.ST as ST (runSTUArray, newListArray, newArray_, STUArray)
+import Data.Bits ((.&.), (.|.), bitSize, testBit, clearBit, setBit, Bits(), shiftR, shiftL, complement)
 import Test.QuickCheck
-import Data.Maybe (catMaybes)
-import GHC.Base (int2Word#, word2Int#, Int(..), indexWordArray#, or#, and#, uncheckedShiftRL#, uncheckedShiftL#,
-  (-#), (==#), (+#), ByteArray#, Word#, Int#, eqWord#, minusWord#)
+import GHC.Base (int2Word#, word2Int#, Int(..), uncheckedShiftRL#, uncheckedShiftL#,
+  (-#), (==#), Word#, Int#)
 import Debug.Trace
-import GHC.Word (Word(..))
 
 type CA = Ring 
 
 data Rule = Rule { ruleWidth :: !Int, rules :: !(UArray Int Int) }
-
-instance Show Rule where
-  show = showSimpleRule
 
 -- | Create a rule, assuming the given bit width. The width specifies the number
 -- of bits to either side of a cell in which to look. A width of 2 implies
@@ -66,130 +55,12 @@ mkRule w rules = Rule w arr
     toHighBit True = setBit 0 ((bitSize (undefined :: Int)) - 1)
     toHighBit _ = 0
 
--- | Reads a rule consiting of 1's and 0's. Any other characters are ignored.
--- A newline terminates the rule. The width of the rule is determined by the
--- length of the string. The rule is rounded down to the closest width
-readRule :: String -> Rule
-readRule s = mkRule neighbors bits
-  where
-    bits = catMaybes $ map toBool s
-    neighbors = max 1 (((floor $ log bitLength / log 2) - 1) `div` 2)
-    bitLength = fromIntegral $ length bits
-    toBool '0' = Just False
-    toBool '1' = Just True
-    toBool _ = Nothing
-
--- | Create a rule with new bits from an existing rule.
-fromRule :: Rule -> [Bool] -> Rule
-fromRule (Rule w _) = mkRule w
-
--- | Gets the bit patterns for this rule. The bits are arranged in ascending
--- order according to the value of the keys given. The pattern for each
--- bit is therefore implicit in the position of the bit.
-ruleBits :: Rule -> [Bool]
-ruleBits = map toBool . elems . rules
-
-toBool :: Int -> Bool
-toBool 0 = False
-toBool _ = True
-
--- ^ Number of bits that make up this rule. 
-ruleLength :: Rule -> Int
-ruleLength (Rule w _) = 2 ^ (w * 2 + 1)
-
--- ^ Width of the automata.
-caWidth :: CA -> Int
-caWidth = size
-
--- ^ Bits that make up an automata.
-caBits :: CA -> [Bool]
-caBits = toListR
-
-h1 :: Int
-h1 = $([|clearBit (complement 0) ((bitSize (undefined :: Int)) - 1)|]) -- 2147483647 
-
-intSize :: Int
-intSize = $([|bitSize (undefined :: Int)|]) -- 32 
-
 -- ^ Simulate the CA infinitely, using the rule given. Return the final CA. Note that rules
 -- are matched left to right. That is, when neighboring cells are examined
 -- to match a rule, they are read left to right and the most significant
 -- bit is on the left.
 sim :: Rule -> CA -> [CA]
 sim = simWithUArray stepWithUArray
-
--- | Make a CA that is biased to white or black, randomly. CAs should
--- have 75% white or black bits.
-mkBiasedCA :: Int -> IO CA
-mkBiasedCA width  =
-    do
-      -- Randomly determine if we are biased towards white or black
-      bias <- randomRIO (0 :: Int, 1) >>= return . (== 0)
-      let selectVal n
-            | n >= 75 && bias = True -- Biased to white
-            | bias = False
-            | n >= 75 && not bias = False -- Biased to black
-            | otherwise = True
-      vals <- replicateM width (randomRIO (0 :: Int, 99) >>= return . selectVal)
-      return $! fromListR vals
-
--- ^ Make a random CA row with the given width.
-mkRandomCA :: Int -> IO CA
-mkRandomCA width  =
-  do
-    vals <- replicateM width (randomRIO (0 :: Int, 1) >>= \n -> return $ if n == (0 :: Int) then False else True)
-    return $! fromListR vals
-
--- ^ Make an all white CA.
-mkWhiteCA :: Int -> IO CA
-mkWhiteCA width = return $! (fromListR (replicate width False))
-
--- | Makes a random rule with the given number of neighbors on each side of the
--- cell. The rule has full coverage of all possible configurations. 
-mkRandomRule :: Int -> IO Rule
-mkRandomRule neighbors =
-  do
-    rules <- replicateM (2 ^ (neighbors * 2 + 1)) (randomRIO (0 :: Int, 1) >>= \n -> return $ if n == (0 :: Int) then False else True)
-    return $! mkRule neighbors rules
-
--- | Make a rule that turns all cells white.
-mkAllWhiteRule :: Int -> Rule
-mkAllWhiteRule w = mkRule w (repeat False)
-
--- | Make a rule that turns all cells black.
-mkAllBlackRule :: Int -> Rule
-mkAllBlackRule w = mkRule w (repeat True)
-
-showSimpleRule (Rule w r) = "[" ++ concatMap showBit (elems r) ++ "]"
-    where
-      showBit 0 = "0"
-      showBit _ = "1"
-
-showFullRule (Rule w r) = show w ++ " [" ++ concat (intersperse ", " $ map showBit (assocs r)) ++ "]"
-    where
-      showBit (i, b) = "(" ++ show i ++ "," ++ show b ++ ")"
-
--- | Advance the CA one step, using the
--- rule given. The automata is examined from left to right. The same
--- cell which was current when step began will be current when the step
--- ends. This function is kept around to verify the stepWithUArray function.
-stepSimple :: Int -> Rule -> CA -> CA
-stepSimple rowLen rule@(Rule width rules) row =
-  -- Apply rule to each cell in CA. 
-  let getRule currIdx = pattern' start 0
-        where
-          start = (currIdx + width)
-          end = (currIdx - width)
-          -- Move left to right, determine rule to retrieve.
-          pattern' cnt !result
-            | cnt < end = result
-            | otherwise = if (currR cnt row)
-                            then pattern' (cnt - 1) (result * 2 + 1)
-                            else pattern' (cnt - 1) (result * 2)
-      cells = map (toBool . unsafeAt rules . getRule) [0 .. rowLen - 1]
-      result = fromUArray (UArray.listArray (0, rowLen - 1) cells)
-  in -- trace ("retrieved rules: " ++ show (map getRule [0 .. rowLen - 1])) 
-         result
 
 stepWithUArray :: Rule -> Int -> UArray Int Int -> UArray Int Int
 stepWithUArray rule@(Rule !width@(I# width#) !rules) !leftOver@(I# leftOver#) !row =
@@ -201,16 +72,14 @@ stepWithUArray rule@(Rule !width@(I# width#) !rules) !leftOver@(I# leftOver#) !r
       w2 = 2 ^ (width + 1)
       -- Get the value of the rule for the leftmost cell. This only
       -- works if leftOver > width
-      firstRule
-          | leftOver > width =
-              -- Get initial value by shifting upper array (leftover - width) amount. Need
-              -- to mask off extra bits once shifted too.
-              let leftVal = ((unsafeAt row upper) `shiftR` (leftOver - width)) .&. (2 ^ width - 1)
-                  -- Right side of rule is current cell plus neighbors to right,
-                  -- thus mask all but (width + 1) bits.
-                  rightVal = (unsafeAt row lower) .&. (w2 - 1)
-              in leftVal .|. (rightVal `shiftL` width)
-          | otherwise = error "leftover less than width!" -- leftover less than width bad.
+      firstRule =
+        -- Get initial value by shifting upper array (leftover - width) amount. Need
+        -- to mask off extra bits once shifted too.
+        let leftVal = ((unsafeAt row upper) `shiftR` (leftOver - width)) .&. (2 ^ width - 1)
+            -- Right side of rule is current cell plus neighbors to right,
+            -- thus mask all but (width + 1) bits.
+            rightVal = (unsafeAt row lower) .&. (w2 - 1)
+        in leftVal .|. (rightVal `shiftL` width)
       fillRow :: forall s. ST s (ST.STUArray s Int Int)
       fillRow = {-# SCC "step_fillRow" #-}
           do
@@ -234,14 +103,14 @@ stepWithUArray rule@(Rule !width@(I# width#) !rules) !leftOver@(I# leftOver#) !r
               ruleBit# 0 = 0# 
               ruleBit# _ = let (I# w1#) = w1 in w1#
               fill !cnt# !arrIdx !rule !ruleMask
-                | cnt# ==# 0# = {-# CORE "fill_0" #-} {-# SCC "fill_0" #-} do
+                | cnt# ==# 0# = do
                     let (# n#, _ #) = fillS (leftOver# -# width# -# 1#) rule
                                                       ruleMask 0 (unsafeAt row arrIdx) (unsafeAt row lower)
                         -- shift final accumulated value and mask off any extraneous
                         -- bits at the top
                         newVal = ((I# n#) `unsafeShiftR` (intSize - leftOver)) .&. (2 ^ leftOver - 1)
                     unsafeWrite arr arrIdx newVal
-                | otherwise = {-# CORE "fill_1" #-} {-# SCC "fill_1" #-} do
+                | otherwise = do
                     let (# newVal#, newRuleIdx# #) = fillS (intSize# -# width# -# 1#) rule
                                                   ruleMask 0 (unsafeAt row arrIdx) (unsafeAt row (arrIdx + 1))
                     unsafeWrite arr arrIdx (I# newVal#)
@@ -250,28 +119,23 @@ stepWithUArray rule@(Rule !width@(I# width#) !rules) !leftOver@(I# leftOver#) !r
                   | cnt# ==# 0# = 
                       let newRuleIdx = ((rule .|. ruleBit (nextVal .&. 1)) `unsafeShiftR` 1) .&. ruleShiftMask
                           newVal = ((val `unsafeShiftR` 1) .&. h1) .|. unsafeAt rules rule
-                      in {-# CORE "fillS_0" #-} {-# SCC "fillS_0" #-} fillE (width# -# 1#) newRuleIdx 2 newVal nextVal
+                      in fillE (width# -# 1#) newRuleIdx 2 newVal nextVal
                   | otherwise = 
-                      let newRuleIdx = {-# SCC "fillS_12" #-} ((rule .|. (I# bit#)) `unsafeShiftR` 1) .&. ruleShiftMask
+                      let newRuleIdx = ((rule .|. (I# bit#)) `unsafeShiftR` 1) .&. ruleShiftMask
                           bit# = ruleBit# (currVal .&. cellMask)
                           newVal = ((val `unsafeShiftR` 1) .&. h1) .|. unsafeAt rules rule
-                      in {-# CORE "fillS_1" #-} {-# SCC "fillS_1" #-} fillS (cnt# -# 1#) newRuleIdx (cellMask `unsafeShiftL` 1) newVal currVal nextVal
+                      in fillS (cnt# -# 1#) newRuleIdx (cellMask `unsafeShiftL` 1) newVal currVal nextVal
               fillE !cnt# !rule !cellMask !val !currVal 
                   | cnt# ==# 0# = 
                           let (I# newVal#) = newVal
                               (I# newRuleIdx#) = newRuleIdx
-                          in {-# CORE "fillE_0" #-} {-# SCC "fillE_0" #-} (# newVal#, newRuleIdx# #)
-                  | otherwise = {-# CORE "fillE_1" #-} {-# SCC "fillE_1" #-} fillE (cnt# -# 1#) newRuleIdx (cellMask `unsafeShiftL` 1) newVal currVal
+                          in (# newVal#, newRuleIdx# #)
+                  | otherwise = fillE (cnt# -# 1#) newRuleIdx (cellMask `unsafeShiftL` 1) newVal currVal
                 where
                   newVal = ((val `unsafeShiftR` 1) .&. h1) .|. (unsafeAt rules rule) 
                   newRuleIdx = ((rule .|. ruleBit (currVal .&. cellMask)) `unsafeShiftR` 1) .&. ruleShiftMask
             fill upper# 0 firstRule ruleStartMask
             return $! arr
-
--- | Simulate using the step function. Kept to verify results against simWithUArray.  
-simSimple rule initial = go (stepSimple (caWidth initial) rule) initial
-  where
-    go f !v = v : go f (f v)
 
 simWithUArray :: (Rule -> Int -> UArray Int Int -> UArray Int Int) -> Rule ->  CA -> [CA]
 simWithUArray step rule initial =
@@ -325,10 +189,82 @@ simWithUArray step rule initial =
                 fill 0 0 0
                 return $! arr)
 
+instance Show Rule where
+  show = showSimpleRule
+
+-- | Create a rule with new bits from an existing rule.
+fromRule :: Rule -> [Bool] -> Rule
+fromRule (Rule w _) = mkRule w
+
+-- ^ Number of bits that make up this rule. 
+ruleLength :: Rule -> Int
+ruleLength (Rule w _) = 2 ^ (w * 2 + 1)
+
+-- | Gets the bit patterns for this rule. The bits are arranged in ascending
+-- order according to the value of the keys given. The pattern for each
+-- bit is therefore implicit in the position of the bit.
+ruleBits :: Rule -> [Bool]
+ruleBits = map toBool . elems . rules
+  where
+    toBool :: Int -> Bool
+    toBool 0 = False
+    toBool _ = True
+    
+-- ^ Width of the automata.
+caWidth :: CA -> Int
+caWidth = size
+
+-- ^ Bits that make up an automata.
+caBits :: CA -> [Bool]
+caBits = toListR
+
+h1 :: Int
+h1 = clearBit (complement 0) ((bitSize (undefined :: Int)) - 1) -- 2147483647 
+
+intSize :: Int
+intSize = bitSize (undefined :: Int) -- 32 
+
 -- ^ Bits from left to right                      
 showBits :: (Bits a) => a -> String
 showBits n = concatMap (\i -> if testBit n i then "1" else "0") [0..bitSize n - 1]
 
+showSimpleRule (Rule w r) = "[" ++ concatMap showBit (elems r) ++ "]"
+    where
+      showBit 0 = "0"
+      showBit _ = "1"
+
+showFullRule (Rule w r) = show w ++ " [" ++ concat (intersperse ", " $ map showBit (assocs r)) ++ "]"
+    where
+      showBit (i, b) = "(" ++ show i ++ "," ++ show b ++ ")"
+
+-- | Advance the CA one step, using the
+-- rule given. The automata is examined from left to right. The same
+-- cell which was current when step began will be current when the step
+-- ends. This function is kept around to verify the stepWithUArray function.
+stepSimple :: Int -> Rule -> CA -> CA
+stepSimple rowLen rule@(Rule width rules) row =
+  -- Apply rule to each cell in CA. 
+  let getRule currIdx = pattern' start 0
+        where
+          start = (currIdx + width)
+          end = (currIdx - width)
+          -- Move left to right, determine rule to retrieve.
+          pattern' cnt !result
+            | cnt < end = result
+            | otherwise = if (currR cnt row)
+                            then pattern' (cnt - 1) (result * 2 + 1)
+                            else pattern' (cnt - 1) (result * 2)
+      cells = map (toBool . unsafeAt rules . getRule) [0 .. rowLen - 1]
+      result = fromUArray (UArray.listArray (0, rowLen - 1) cells)
+      toBool 0 = False
+      toBool _ = True
+  in result
+
+-- | Simulate using the step function. Kept to verify results against simWithUArray.  
+simSimple rule initial = go (stepSimple (caWidth initial) rule) initial
+  where
+    go f !v = v : go f (f v)
+      
 newtype RuleX = RuleX Rule
   deriving Show
   
